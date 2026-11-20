@@ -1,0 +1,27 @@
+node_modules
+.DS_Store
+dist
+dist-electron
+dist-ssr
+*.local
+.env
+.nitro
+.tanstack
+.wrangler
+.output
+.vinxi
+release
+__unconfig*
+todos.json
+src/routeTree.gen.ts
+.vscode
+AGENTS.md
+release/
+
+# repowise API keys (local)
+.repowise/.env
+
+.claude/
+.repowise/
+.playwright-mcp/
+build-resources/macos-quicklook/build

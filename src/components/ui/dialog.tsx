@@ -1,0 +1,144 @@
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { cn } from "@/lib/utils";
+import IconX from "~icons/tabler/x";
+
+export const Dialog = DialogPrimitive.Root;
+export const DialogTrigger = DialogPrimitive.Trigger;
+export const DialogPortal = DialogPrimitive.Portal;
+export const DialogClose = DialogPrimitive.Close;
+
+function DialogCloseButton() {
+	return (
+		<DialogPrimitive.Close
+			aria-label="Close dialog"
+			className="absolute right-4 top-4 rounded-full p-1.5 text-(--muted-foreground) transition-[background-color,color,transform] duration-150 hover:bg-white/8 hover:text-(--foreground) active:scale-95"
+		>
+			<IconX size={16} />
+		</DialogPrimitive.Close>
+	);
+}
+
+export function DialogOverlay({
+	className,
+	...props
+}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+	return (
+		<DialogPrimitive.Overlay
+			className={cn(
+				"fixed inset-0 z-50 bg-black/55 backdrop-blur-md data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",
+				className,
+			)}
+			{...props}
+		/>
+	);
+}
+
+function DialogPanel({
+	className,
+	children,
+	...props
+}: React.ComponentProps<typeof DialogPrimitive.Content>) {
+	return (
+		<DialogPortal>
+			<DialogOverlay />
+			<DialogPrimitive.Content className={className} {...props}>
+				{children}
+				<DialogCloseButton />
+			</DialogPrimitive.Content>
+		</DialogPortal>
+	);
+}
+
+export function DialogContent({
+	className,
+	children,
+	...props
+}: React.ComponentProps<typeof DialogPrimitive.Content>) {
+	return (
+		<DialogPanel
+			className={cn(
+				"island-strong fixed left-1/2 top-1/2 z-50 grid w-[min(92vw,36rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-(--radius-xl) p-6",
+				"data-[state=open]:animate-scale-in data-[state=closed]:animate-fade-out transition-[transform,opacity] duration-200",
+				className,
+			)}
+			{...props}
+		>
+			{children}
+		</DialogPanel>
+	);
+}
+
+export function DialogHeader({
+	className,
+	...props
+}: React.ComponentProps<"div">) {
+	return <div className={cn("flex flex-col gap-2", className)} {...props} />;
+}
+
+export function DialogFooter({
+	className,
+	...props
+}: React.ComponentProps<"div">) {
+	return (
+		<div
+			className={cn("flex items-center justify-end gap-2", className)}
+			{...props}
+		/>
+	);
+}
+
+export function DialogTitle({
+	className,
+	...props
+}: React.ComponentProps<typeof DialogPrimitive.Title>) {
+	return (
+		<DialogPrimitive.Title
+			className={cn(
+				"text-lg font-semibold tracking-tight text-(--foreground)",
+				className,
+			)}
+			{...props}
+		/>
+	);
+}
+
+export function DialogDescription({
+	className,
+	...props
+}: React.ComponentProps<typeof DialogPrimitive.Description>) {
+	return (
+		<DialogPrimitive.Description
+			className={cn("text-sm text-(--muted-foreground)", className)}
+			{...props}
+		/>
+	);
+}
+
+const SHEET_SIDE_CLASSES = {
+	left: "left-0 data-[state=open]:animate-slide-in-left data-[state=closed]:animate-slide-out-left",
+	right:
+		"right-0 data-[state=open]:animate-slide-in-right data-[state=closed]:animate-slide-out-right",
+} as const;
+
+export function SheetContent({
+	className,
+	children,
+	side = "right",
+	...props
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+	side?: "left" | "right";
+}) {
+	return (
+		<DialogPanel
+			className={cn(
+				"island-strong fixed top-0 z-50 flex h-full w-[min(92vw,24rem)] flex-col gap-4 p-6",
+				SHEET_SIDE_CLASSES[side],
+				"transition-[transform,opacity] duration-200",
+				className,
+			)}
+			{...props}
+		>
+			{children}
+		</DialogPanel>
+	);
+}

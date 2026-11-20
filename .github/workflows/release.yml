@@ -1,0 +1,461 @@
+name: Release
+
+# Единственный источник версии — git-тег релиза (vX.Y.Z).
+# Релиз запускается со страницы GitHub: Releases → Draft new release → Create tag → Publish.
+# package.json в репозитории хранит заглушку 0.0.0 и никогда не коммитится ботом:
+# версия подставляется в рабочую копию раннера на этапе сборки и никуда не пушится.
+# Никаких коммитов вида "chore: bump version" и "chore(aur)" больше нет —
+# workflow только читает репозиторий и загружает артефакты в релиз.
+#
+# Производительность:
+# - Веб-сборка (vite + tsup) платформо-независима и выполняется ОДИН раз
+#   в build-web; упаковочные джобы забирают готовые dist/ через артефакт.
+# - macOS собирается целиком на одном arm64-раннере macos-15: electron-builder делает
+#   оба арха (--arm64 --x64), QuickLook-плагин в Release и так universal.
+#   Intel-раннеры (macos-15-intel) дают многочасовые очереди, поэтому не используются.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: 'latest'
+
+jobs:
+  resolve:
+    name: Resolve version from tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Validate tag
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must be vX.Y.Z (got: $TAG)."
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (version $VERSION)"
+
+  build-web:
+    name: Build web assets (once)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout release tag (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Restore Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set version from tag (workspace only, never committed)
+        run: npm version "${{ needs.resolve.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build application
+        run: bun run build
+
+      - name: Upload web artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: |
+            dist/
+            dist-electron/
+            package.json
+          if-no-files-found: error
+          retention-days: 1
+
+  build-linux:
+    name: Build Linux
+    needs:
+      - resolve
+      - build-web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout release tag (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg fakeroot libarchive-tools zstd libfuse2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Restore Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Restore Electron cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('bun.lock') }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download web artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: .
+
+      - name: Build Linux packages
+        run: bunx electron-builder --linux deb pacman tar.gz AppImage --publish never
+
+      - name: Normalize AppImage extension
+        run: |
+          for f in release/*.AppImage; do
+            [ -e "$f" ] || continue
+            mv "$f" "${f%.AppImage}.appimage"
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: release/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows
+    needs:
+      - resolve
+      - build-web
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout release tag (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      - name: Restore Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Restore Electron cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('bun.lock') }}
+
+      - name: Restore NuGet cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('build-resources/windows-thumbnail-provider/*.csproj') }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download web artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: .
+
+      - name: Build Windows thumbnail provider
+        run: bun run build:thumbnail:win
+
+      - name: Build Windows installer
+        run: bunx electron-builder --win nsis --publish never
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: release/*
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS (arm64 + x64)
+    needs:
+      - resolve
+      - build-web
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+    steps:
+      - name: Checkout release tag (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Restore Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: macos-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: macos-bun-
+
+      - name: Restore Electron cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: macos-electron-${{ hashFiles('bun.lock') }}
+
+      - name: Restore Xcode DerivedData
+        uses: actions/cache@v4
+        with:
+          path: build-resources/macos-quicklook/build/DerivedData
+          key: macos-xcode-derived-data-${{ hashFiles('build-resources/macos-quicklook/**/*.swift', 'build-resources/macos-quicklook/**/*.pbxproj') }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download web artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: .
+
+      - name: Build macOS thumbnail provider
+        run: bun run build:thumbnail:mac
+
+      - name: Build macOS packages (arm64 + x64)
+        run: bunx electron-builder --mac --arm64 --x64 --publish never
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: release/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - resolve
+      - build-linux
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout release tag (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: '*-artifacts'
+          merge-multiple: true
+
+      - name: List release artifacts
+        run: ls -la release/
+
+      - name: Upload to the published release
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          mapfile -t files < <(find release -maxdepth 1 -type f)
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  publish-aur:
+    name: Publish AUR package
+    needs:
+      - resolve
+      - publish-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PACKAGE_NAME: kanso-bin
+      AUR_REPO_URL: aur@aur.archlinux.org:kanso-bin.git
+    steps:
+      - name: Download Linux tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: release
+
+      - name: Compute tarball SHA256
+        id: sha
+        run: |
+          sha=$(sha256sum release/Kanso-*-linux-x64.tar.gz | cut -d' ' -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Setup SSH for AUR
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+      - name: Add AUR to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+
+      # PKGBUILD/.SRCINFO генерируются во временной директории и пушатся
+      # напрямую в AUR. В main-репозиторий ничего не коммитится.
+      - name: Publish to AUR
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SOURCE_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/Kanso-${VERSION}-linux-x64.tar.gz"
+          LOGO_URL="https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/public/logo512.png"
+
+          WORKDIR=$(mktemp -d)
+          trap 'rm -rf "$WORKDIR"' EXIT
+
+          git clone "$AUR_REPO_URL" "$WORKDIR/kanso-bin"
+
+          cat > "$WORKDIR/kanso-bin/PKGBUILD" <<EOF
+          pkgname=${PACKAGE_NAME}
+          pkgver=${VERSION}
+          pkgrel=1
+          pkgdesc="Modern media player focused on convenience, beauty, and performance"
+          arch=("x86_64")
+          url="https://github.com/${{ github.repository }}"
+          license=("MIT")
+          depends=(
+            "gtk3"
+            "libsecret"
+            "nss"
+            "alsa-lib"
+          )
+          optdepends=(
+            "ffmpeg: broader codec support from the system stack"
+          )
+          provides=("kanso")
+          conflicts=("kanso")
+          source_x86_64=("kanso-\${pkgver}.tar.gz::${SOURCE_URL}"
+                     "logo512.png::${LOGO_URL}")
+          sha256sums_x86_64=("${SOURCE_SHA}"
+                       "SKIP")
+
+          package() {
+            install -dm755 "\${pkgdir}/opt/kanso"
+            cp -a "\${srcdir}/Kanso-\${pkgver}-linux-x64/"* "\${pkgdir}/opt/kanso/"
+
+            install -dm755 "\${pkgdir}/usr/bin"
+            ln -sf "/opt/kanso/kanso" "\${pkgdir}/usr/bin/kanso"
+
+            install -Dm644 "\${srcdir}/logo512.png" \\
+              "\${pkgdir}/usr/share/pixmaps/kanso.png"
+
+            install -Dm644 /dev/stdin "\${pkgdir}/usr/share/applications/kanso.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Name=Kanso
+          Exec=/usr/bin/kanso %U
+          Terminal=false
+          Type=Application
+          Icon=kanso
+          StartupWMClass=Kanso
+          Categories=AudioVideo;Video;
+          MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/x-m4v;video/mp2t;
+          DESKTOP
+          }
+          EOF
+
+          cat > "$WORKDIR/kanso-bin/.SRCINFO" <<EOF
+          pkgbase = ${PACKAGE_NAME}
+          	pkgdesc = Modern media player focused on convenience, beauty, and performance
+          	pkgver = ${VERSION}
+          	pkgrel = 1
+          	url = https://github.com/${{ github.repository }}
+          	arch = x86_64
+          	license = MIT
+          	depends = gtk3
+          	depends = libsecret
+          	depends = nss
+          	depends = alsa-lib
+          	optdepends = ffmpeg: broader codec support from the system stack
+          	provides = kanso
+          	conflicts = kanso
+          	source_x86_64 = kanso-${VERSION}.tar.gz::${SOURCE_URL}
+          	source_x86_64 = logo512.png::${LOGO_URL}
+          	sha256sums_x86_64 = ${SOURCE_SHA}
+          	sha256sums_x86_64 = SKIP
+
+          pkgname = ${PACKAGE_NAME}
+          EOF
+
+          cd "$WORKDIR/kanso-bin"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR package already up to date for ${TAG}."
+            exit 0
+          fi
+
+          git -c user.email="github-actions@kanso.local" -c user.name="Kanso Release Bot" \
+            commit -m "Release ${TAG}"
+          git push

@@ -1,0 +1,89 @@
+import { defineConfig } from 'vite'
+import { devtools } from '@tanstack/devtools-vite'
+import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
+import tsconfigPaths from 'vite-tsconfig-paths'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import fs from 'node:fs'
+
+import viteReact from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import Icons from 'unplugin-icons/vite'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+function copyPublicFiles(): import('vite').Plugin {
+  return {
+    name: 'copy-public-files',
+    closeBundle() {
+      const publicDir = path.join(__dirname, 'public')
+      const outDir = path.join(__dirname, 'dist', 'client')
+
+      if (fs.existsSync(publicDir) && fs.existsSync(outDir)) {
+        const files = fs.readdirSync(publicDir)
+        for (const file of files) {
+          if (file === 'preview.png') {
+            continue
+          }
+
+          const srcPath = path.join(publicDir, file)
+          const destPath = path.join(outDir, file)
+
+          if (fs.statSync(srcPath).isFile()) {
+            fs.copyFileSync(srcPath, destPath)
+          }
+        }
+      }
+    },
+  }
+}
+
+const config = defineConfig({
+  server: {
+    port: 3000,
+    strictPort: true,
+  },
+  build: {
+    chunkSizeWarningLimit: 650,
+    rollupOptions: {
+      onwarn(warning, warn) {
+        if (
+          warning.code === 'UNUSED_EXTERNAL_IMPORT' &&
+          typeof warning.id === 'string' &&
+          (
+            warning.id.includes('@tanstack/start-server-core/dist/esm/index.js') ||
+            warning.id.includes('@tanstack/start-client-core/dist/esm/index.js')
+          )
+        ) {
+          return
+        }
+
+        warn(warning)
+      },
+    },
+  },
+	plugins: [
+		...(process.env.NODE_ENV === 'development' ? [devtools()] : []),
+		TanStackRouterVite({
+			target: 'react',
+			autoCodeSplitting: true,
+			routeFileIgnorePattern: '\\.test\\.tsx?$',
+		}),
+		tsconfigPaths({ projects: ['./tsconfig.json'] }),
+		tailwindcss(),
+		Icons({ compiler: 'jsx', jsx: 'react' }),
+		viteReact({
+			babel: {
+				plugins: [
+					['@babel/plugin-transform-typescript', {
+						allowDeclareFields: true,
+						isTSX: true,
+					}],
+				],
+			},
+		}),
+		copyPublicFiles(),
+	],
+})
+
+export default config
